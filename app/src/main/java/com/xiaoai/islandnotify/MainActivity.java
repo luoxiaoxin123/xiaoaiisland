@@ -191,6 +191,8 @@ public class MainActivity extends AppCompatActivity {
         try {
             Intent reschedule = new Intent(ACTION_RESCHEDULE_DAILY);
             reschedule.setPackage(TARGET_VOICEASSIST);
+            reschedule.putExtra("from_source_change", true);
+            reschedule.putExtra("new_source", source);
             sendBroadcast(reschedule);
         } catch (Throwable ignored) {
         }

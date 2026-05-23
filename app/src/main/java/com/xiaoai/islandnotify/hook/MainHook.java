@@ -780,6 +780,7 @@ public class MainHook {
                     context.getSharedPreferences(PREFS_WAKEUP_MIRROR, Context.MODE_PRIVATE);
             int oldHash = wakeupMirror.getInt(KEY_WAKEUP_MIRROR_HASH, 0);
             if (hash == oldHash) return true;
+            boolean isFirstSync = (oldHash == 0);
             wakeupMirror.edit()
                     .putString(KEY_WAKEUP_MIRROR_BEAN, beanJson)
                     .putInt(KEY_WAKEUP_MIRROR_HASH, hash)
@@ -789,6 +790,9 @@ public class MainHook {
                 mLastCourseDataHash = hash;
                 XposedBridge.log(TAG + ": 收到 WakeUp 课程镜像，触发重调度 hash=" + hash);
                 safeReschedule(context, "wakeup_source_sync", false);
+            }
+            if (isFirstSync) {
+                showFirstSyncToast(context);
             }
             return true;
         }
@@ -800,6 +804,7 @@ public class MainHook {
                     context.getSharedPreferences(PREFS_SHIGUANG_MIRROR, Context.MODE_PRIVATE);
             int oldHash = mirror.getInt(KEY_SHIGUANG_MIRROR_HASH, 0);
             if (hash == oldHash) return true;
+            boolean isFirstSync = (oldHash == 0);
             mirror.edit()
                     .putString(KEY_SHIGUANG_MIRROR_BEAN, beanJson)
                     .putInt(KEY_SHIGUANG_MIRROR_HASH, hash)
@@ -810,15 +815,23 @@ public class MainHook {
                 XposedBridge.log(TAG + ": 收到拾光课程镜像，触发重调度 hash=" + hash);
                 safeReschedule(context, "shiguang_source_sync", false);
             }
+            if (isFirstSync) {
+                showFirstSyncToast(context);
+            }
             return true;
         }
         if (ACTION_RESCHEDULE_DAILY.equals(action)) {
             XposedBridge.log(TAG + ": [daily-reschedule] trigger");
+            boolean fromSourceChange = intent.getBooleanExtra("from_source_change", false);
+            String newSource = intent.getStringExtra("new_source");
             SharedPreferences prefs = getConfigPrefs(context);
             refreshRuntimeSwitchesFromPrefs(prefs);
             clearSkippedAutomationTokens(context);
             markDailyRescheduleRun(context);
             safeReschedule(context, "island_reschedule_daily", true);
+            if (fromSourceChange && newSource != null) {
+                checkMirrorAndNotify(context, newSource);
+            }
             return true;
         }
         if (ACTION_NOTIF_CANCEL.equals(action)) {
@@ -2601,6 +2614,29 @@ public class MainHook {
             return readShiguangMirrorBean(ctx);
         }
         return readCourseDataBean(ctx);
+    }
+
+    /** 切换数据源后检查对应 mirror 是否存在，不存在则提示用户打开对应 App。 */
+    private void checkMirrorAndNotify(Context ctx, String source) {
+        if (!SOURCE_WAKEUP.equals(source) && !SOURCE_SHIGUANG.equals(source)) return;
+        String bean = SOURCE_WAKEUP.equals(source)
+                ? readWakeupMirrorBean(ctx)
+                : readShiguangMirrorBean(ctx);
+        if (bean != null && !bean.isEmpty()) return;
+        String msg = SOURCE_WAKEUP.equals(source)
+                ? "请先打开 WakeUp 课程表"
+                : "请先打开拾光课程表";
+        showToast(ctx, msg);
+    }
+
+    /** 首次同步成功时提示用户后续自动同步不再提醒。 */
+    private void showFirstSyncToast(Context ctx) {
+        showToast(ctx, "课程数据已同步成功，后续更改将自动同步，不再提醒");
+    }
+
+    private void showToast(Context ctx, String msg) {
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(() ->
+                android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_SHORT).show());
     }
 
     private int readConfigInt(SharedPreferences prefs, String key, int fallback) {
