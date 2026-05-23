@@ -99,7 +99,9 @@ final class CourseScheduleParser {
                     + sectionTimesStableRaw(setting)
                     + setting.optString("totalWeek")
                     + setting.optString("weekStart")
-                    + presentWeek;
+                    + presentWeek
+                    + startDate
+                    + sundayFirst;
             return stable.hashCode();
         } catch (Throwable ignored) {
             return beanJson.hashCode();
