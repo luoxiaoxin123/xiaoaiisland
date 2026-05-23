@@ -57,8 +57,14 @@ final class CourseScheduleParser {
         JSONObject root = new JSONObject(beanJson);
         JSONObject data = root.getJSONObject("data");
         JSONObject setting = data.getJSONObject("setting");
-        int presentWeek = setting.optInt("presentWeek", 0);
         int totalWeek = setting.optInt("totalWeek", 0);
+        
+        int presentWeek = setting.optInt("presentWeek", 0);
+        String startDate = setting.optString("startDate", "");
+        boolean sundayFirst = setting.optBoolean("sundayFirst", false);
+        if (!startDate.isEmpty()) {
+            presentWeek = computePresentWeek(startDate, presentWeek, totalWeek, sundayFirst);
+        }
 
         JSONArray sectionTimesArray = parseSectionTimesArray(setting);
         java.util.Map<Integer, SectionTime> sectionTimes = buildSectionTimeMap(sectionTimesArray);
@@ -81,11 +87,19 @@ final class CourseScheduleParser {
             JSONObject root = new JSONObject(beanJson);
             JSONObject data = root.getJSONObject("data");
             JSONObject setting = data.getJSONObject("setting");
+            
+            int presentWeek = setting.optInt("presentWeek", 0);
+            String startDate = setting.optString("startDate", "");
+            boolean sundayFirst = setting.optBoolean("sundayFirst", false);
+            if (!startDate.isEmpty()) {
+                presentWeek = computePresentWeek(startDate, presentWeek, setting.optInt("totalWeek", 0), sundayFirst);
+            }
+
             String stable = String.valueOf(data.optJSONArray("courses"))
                     + sectionTimesStableRaw(setting)
                     + setting.optString("totalWeek")
                     + setting.optString("weekStart")
-                    + setting.optInt("presentWeek", 0);
+                    + presentWeek;
             return stable.hashCode();
         } catch (Throwable ignored) {
             return beanJson.hashCode();
@@ -320,5 +334,59 @@ final class CourseScheduleParser {
             }
             return false;
         }
+    }
+
+    private static int computePresentWeek(String startDate, int currentWeek, int totalWeek, boolean sundayFirst) {
+        if (startDate == null || startDate.isEmpty()) return currentWeek;
+        int[] ymd = parseYmd(startDate);
+        if (ymd == null) return currentWeek;
+
+        java.util.Calendar start = java.util.Calendar.getInstance(java.util.Locale.US);
+        start.set(java.util.Calendar.YEAR, ymd[0]);
+        start.set(java.util.Calendar.MONTH, Math.max(0, ymd[1] - 1));
+        start.set(java.util.Calendar.DAY_OF_MONTH, Math.max(1, ymd[2]));
+        clearClock(start);
+
+        java.util.Calendar today = java.util.Calendar.getInstance(java.util.Locale.US);
+        clearClock(today);
+
+        int weekStartDay = sundayFirst ? java.util.Calendar.SUNDAY : java.util.Calendar.MONDAY;
+        alignToWeekStart(start, weekStartDay);
+        alignToWeekStart(today, weekStartDay);
+
+        long diffDays = (today.getTimeInMillis() - start.getTimeInMillis()) / 86_400_000L;
+        int week = (int) Math.floor(diffDays / 7.0d) + 1;
+        if (week < 1) week = 1;
+        if (totalWeek > 0 && week > totalWeek) week = totalWeek;
+        return week;
+    }
+
+    private static void clearClock(java.util.Calendar c) {
+        c.set(java.util.Calendar.HOUR_OF_DAY, 0);
+        c.set(java.util.Calendar.MINUTE, 0);
+        c.set(java.util.Calendar.SECOND, 0);
+        c.set(java.util.Calendar.MILLISECOND, 0);
+    }
+
+    private static void alignToWeekStart(java.util.Calendar c, int weekStartDay) {
+        int cur = c.get(java.util.Calendar.DAY_OF_WEEK);
+        int delta = cur - weekStartDay;
+        if (delta < 0) delta += 7;
+        if (delta != 0) c.add(java.util.Calendar.DAY_OF_MONTH, -delta);
+    }
+
+    private static int[] parseYmd(String raw) {
+        try {
+            String[] parts = raw.split("-");
+            if (parts.length >= 3) {
+                return new int[]{
+                        Integer.parseInt(parts[0]),
+                        Integer.parseInt(parts[1]),
+                        Integer.parseInt(parts[2])
+                };
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 }

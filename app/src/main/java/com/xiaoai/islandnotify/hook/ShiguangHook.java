@@ -282,6 +282,8 @@ public class ShiguangHook {
             setting.put("totalWeek", totalWeek);
             setting.put("weekStart", 1);
             setting.put("sectionTimes", sectionTimes);
+            setting.put("startDate", config.semesterStartDate);
+            setting.put("sundayFirst", config.sundayFirst);
 
             JSONObject data = new JSONObject();
             data.put("setting", setting);

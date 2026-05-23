@@ -223,6 +223,8 @@ public class WakeupHook {
             setting.put("totalWeek", totalWeek);
             setting.put("weekStart", 1);
             setting.put("sectionTimes", sectionTimes);
+            setting.put("startDate", termConfig.startDate);
+            setting.put("sundayFirst", termConfig.sundayFirst);
 
             JSONObject data = new JSONObject();
             data.put("setting", setting);
