@@ -2624,8 +2624,8 @@ public class MainHook {
                 : readShiguangMirrorBean(ctx);
         if (bean != null && !bean.isEmpty()) return;
         String msg = SOURCE_WAKEUP.equals(source)
-                ? "请先打开 WakeUp 课程表"
-                : "请先打开拾光课程表";
+                ? "请打开 WakeUp 课程表以完成数据同步"
+                : "请打开拾光课程表以完成数据同步";
         showToast(ctx, msg);
     }
 
