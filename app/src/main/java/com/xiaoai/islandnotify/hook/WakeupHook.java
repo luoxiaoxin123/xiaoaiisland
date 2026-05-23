@@ -30,6 +30,7 @@ public class WakeupHook {
     private static final String HOOKED_KEY = "xiaoai.island.wakeup.hooked";
 
     private android.os.FileObserver mDbObserver;
+    private android.os.FileObserver mPrefsObserver;
     private android.os.Handler mHandler;
     private final Object mSyncToken = new Object();
     private volatile int mLastPushedHash = 0;
@@ -50,6 +51,7 @@ public class WakeupHook {
                     protected void afterHookedMethod(MethodHookParam param) {
                         Context appCtx = (Application) param.thisObject;
                         registerDbObserver(appCtx);
+                        registerPrefsObserver(appCtx);
                         postSync(appCtx, 300L, "startup");
                     }
                 });
@@ -77,6 +79,30 @@ public class WakeupHook {
         };
         mDbObserver.startWatching();
         XposedBridge.log(TAG + ": Wakeup DB 监听已启动 -> " + dbDir.getAbsolutePath());
+    }
+
+    private void registerPrefsObserver(Context ctx) {
+        if (mPrefsObserver != null) return;
+        // startDate / maxWeek / sundayFirst 存储在 /shared_prefs/table<id>_config.xml
+        File prefsDir = new File(ctx.getApplicationInfo().dataDir, "shared_prefs");
+        if (!prefsDir.exists()) {
+            XposedBridge.log(TAG + ": shared_prefs 目录不存在，跳过监听");
+            return;
+        }
+        mPrefsObserver = new android.os.FileObserver(
+                prefsDir.getAbsolutePath(),
+                android.os.FileObserver.MOVED_TO
+                        | android.os.FileObserver.CLOSE_WRITE) {
+            @Override
+            public void onEvent(int event, String path) {
+                if (path == null) return;
+                if (path.startsWith("table") && path.endsWith("_config.xml")) {
+                    postSync(ctx, 400L, "prefs_changed:" + path);
+                }
+            }
+        };
+        mPrefsObserver.startWatching();
+        XposedBridge.log(TAG + ": Wakeup SharedPrefs 监听已启动 -> " + prefsDir.getAbsolutePath());
     }
 
     private void postSync(Context ctx, long delayMs, String reason) {
