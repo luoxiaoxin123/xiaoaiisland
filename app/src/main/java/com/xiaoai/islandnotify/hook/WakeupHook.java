@@ -149,7 +149,7 @@ public class WakeupHook {
             long tableId = -1L;
             long timeTableId = -1L;
             c = sqLiteDb.rawQuery(
-                    "SELECT id, timeTable FROM TableBean ORDER BY CAST(updateTime AS INTEGER) DESC, id DESC LIMIT 1",
+                    "SELECT id, timeTable FROM TableBean ORDER BY id DESC LIMIT 1",
                     null);
             if (c.moveToFirst()) {
                 tableId = c.getLong(0);
