@@ -16,6 +16,7 @@ public class HolidayManager {
     public static final String PREFS_HOLIDAY = "island_holiday";
     public static final String EXTRA_LIST_PREFIX = "holiday_list_";
     private static volatile SharedPreferences sRemotePrefs;
+    private static Context sAppContext;
 
     public static final int TYPE_HOLIDAY = 0;
     public static final int TYPE_WORKSWAP = 1;
@@ -28,8 +29,17 @@ public class HolidayManager {
         sRemotePrefs = null;
     }
 
+    public static void setAppContext(Context context) {
+        sAppContext = context;
+    }
+
     private static SharedPreferences resolvePrefs() {
-        return PrefsAccess.resolve(sRemotePrefs);
+        if (sRemotePrefs != null) return sRemotePrefs;
+        // 回退到本地 SharedPreferences
+        if (sAppContext != null) {
+            return sAppContext.getSharedPreferences(PREFS_HOLIDAY, Context.MODE_PRIVATE);
+        }
+        return PrefsAccess.resolve(null);
     }
 
     public static class HolidayEntry {

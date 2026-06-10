@@ -14,6 +14,7 @@ public class IslandNotifyApp extends Application {
     @Override
     public void onCreate() {
         super.onCreate();
+        HolidayManager.setAppContext(this);
         XposedServiceHelper.registerListener(new XposedServiceHelper.OnServiceListener() {
             @Override
             public void onServiceBind(XposedService service) {
