@@ -468,6 +468,7 @@ private class SettingsComposeState {
     var outEffectExpandCustomColorArgb by mutableIntStateOf(0xFFFFFFFF.toInt())
     var timeoutState by mutableStateOf(TimeoutUiState())
     var courseDataSource by mutableStateOf("xiaoai")
+    var courseDataImported by mutableStateOf(false)
     var reminderMinutes by mutableStateOf("15")
     var repostEnabled by mutableStateOf(true)
     var muteEnabled by mutableStateOf(false)
@@ -584,6 +585,7 @@ private class SettingsComposeState {
         )
         timeoutState = readTimeoutState(prefs)
         courseDataSource = PrefsAccess.readConfigString(prefs, "course_data_source", "xiaoai")
+        courseDataImported = activity.uiReadCourseDataStatus().substringAfter("|", "0") == "1"
         reminderMinutes = PrefsAccess.readConfigInt(prefs, "reminder_minutes_before", 15).toString()
         repostEnabled = PrefsAccess.readConfigBool(prefs, "repost_enabled", true)
         muteEnabled = PrefsAccess.readConfigBool(prefs, "mute_enabled", false)
@@ -1692,12 +1694,18 @@ private fun ReminderCard(activity: MainActivity, state: SettingsComposeState) {
         state.courseDataSource.equals("shiguang", ignoreCase = true) -> 2
         else -> 0
     }
+    val dataSourceDisplayName = when (dataSourceIndex) {
+        1 -> "WakeUp"
+        2 -> "拾光"
+        else -> "超级小爱"
+    }
+    val importStatusText = if (state.courseDataImported) "导入成功" else "等待导入"
     DismissibleHint(
         activity = activity,
         key = "hint_reminder",
         text = "自定义设置通知发送时机",
     )
-    PreferenceGroup(first = true, last = true) {
+    PreferenceGroup(first = true, last = false) {
         Column(modifier = Modifier.fillMaxWidth()) {
             DropDownPreference(
                 title = "课程数据源",
@@ -1735,6 +1743,19 @@ private fun ReminderCard(activity: MainActivity, state: SettingsComposeState) {
                 onClick = {
                     showReminderPicker = true
                 },
+            )
+        }
+    }
+    PreferenceGroup(title = "课程数据状态", first = false, last = true) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            TextPreference(
+                title = "当前数据源",
+                value = dataSourceDisplayName,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            TextPreference(
+                title = "导入状态",
+                value = importStatusText,
             )
         }
     }

@@ -51,6 +51,12 @@
                 <action android:name="com.xiaoai.islandnotify.ACTION_UPDATE_TOTAL_WEEK" />
             </intent-filter>
         </receiver>
+
+        <receiver android:name=".CourseDataStatusReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="com.xiaoai.islandnotify.ACTION_PUSH_COURSE_DATA_STATUS" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>
