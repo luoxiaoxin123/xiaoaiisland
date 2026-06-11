@@ -218,6 +218,31 @@ public class MainActivity extends AppCompatActivity {
         return readTotalWeekFromCourseData();
     }
 
+    /**
+     * 读取 hook 进程最近一次推送的课程数据状态（数据源 + 是否已导入）。
+     *
+     * <p>状态由 {@link CourseDataStatusReceiver} 落入本地 {@code island_runtime}，
+     * 此处本地读取即可，无需跨进程。返回格式 {@code "source|imported"}，
+     * 其中 imported 为 "1"/"0"。无记录时回退到当前配置的数据源 + 未导入。</p>
+     */
+    String uiReadCourseDataStatus() {
+        String fallbackSource = PrefsAccess.readConfigString(getConfigPrefs(), "course_data_source", "xiaoai");
+        try {
+            SharedPreferences sp = getSharedPreferences(PREFS_RUNTIME_NAME, Context.MODE_PRIVATE);
+            String source = sp.getString(CourseDataStatusReceiver.KEY_STATUS_SOURCE, null);
+            boolean hasRecord = sp.contains(CourseDataStatusReceiver.KEY_STATUS_IMPORTED);
+            boolean imported = sp.getBoolean(CourseDataStatusReceiver.KEY_STATUS_IMPORTED, false);
+            // 仅当已有状态记录、且记录的数据源与当前配置一致时才采用 imported。
+            // 数据源切换后、hook 尚未重新推送前，避免沿用旧源的导入态。
+            if (hasRecord && source != null && source.equalsIgnoreCase(fallbackSource)) {
+                return fallbackSource + "|" + (imported ? "1" : "0");
+            }
+        } catch (Throwable e) {
+            Log.w("IslandNotify", "uiReadCourseDataStatus failed: " + e.getMessage());
+        }
+        return fallbackSource + "|0";
+    }
+
     int uiResetAllConfigToDefaults() {
         int removed = resetAllConfigToDefaults();
         requestComposeRefresh();

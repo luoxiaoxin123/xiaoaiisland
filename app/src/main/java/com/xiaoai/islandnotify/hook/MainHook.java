@@ -57,6 +57,9 @@ public class MainHook {
     private static final String ACTION_SHIGUANG_COURSE_SYNC = ShiguangHook.ACTION_SHIGUANG_COURSE_SYNC;
     /** 通知定时取消广播 Action（替代 Handler.postDelayed，setAlarmClock 保证精确触发） */
     private static final String ACTION_NOTIF_CANCEL = "com.xiaoai.islandnotify.ACTION_NOTIF_CANCEL";
+    /** 课程数据状态推送广播 Action（hook 进程 -> 模块进程，供 UI 展示当前数据源与导入状态） */
+    private static final String ACTION_PUSH_COURSE_DATA_STATUS =
+            CourseDataStatusReceiver.ACTION_PUSH_COURSE_DATA_STATUS;
     /** shareData 拖拽分享图片在 miui.focus.pics Bundle 中的 key */
     private static final String PIC_KEY_SHARE = "miui.focus.pic_share";
     /** 测试通知专用标记：用于避免被“旧课表残留精确清理”误删 */
@@ -794,6 +797,7 @@ public class MainHook {
             if (isFirstSync) {
                 showFirstSyncToast(context);
             }
+            pushCourseDataStatus(context);
             return true;
         }
         if (ACTION_SHIGUANG_COURSE_SYNC.equals(action)) {
@@ -818,6 +822,7 @@ public class MainHook {
             if (isFirstSync) {
                 showFirstSyncToast(context);
             }
+            pushCourseDataStatus(context);
             return true;
         }
         if (ACTION_RESCHEDULE_DAILY.equals(action)) {
@@ -832,6 +837,7 @@ public class MainHook {
             if (fromSourceChange && newSource != null) {
                 checkMirrorAndNotify(context, newSource);
             }
+            pushCourseDataStatus(context);
             return true;
         }
         if (ACTION_NOTIF_CANCEL.equals(action)) {
@@ -2632,6 +2638,30 @@ public class MainHook {
     /** 首次同步成功时提示用户后续自动同步不再提醒。 */
     private void showFirstSyncToast(Context ctx) {
         showToast(ctx, "课程数据已同步成功，后续更改将自动同步，不再提醒");
+    }
+
+    /**
+     * 将当前数据源与导入状态推送给模块进程（UI 端展示用）。
+     *
+     * <p>镜像与 CourseData 均存于超级小爱进程私有目录，模块进程无法直接读取，
+     * 故沿用 {@link TotalWeekReceiver} 的单向广播模式：本进程算出状态后
+     * 通过包内广播推给模块的静态 Receiver 落本地盘，UI 再本地读取。</p>
+     */
+    private void pushCourseDataStatus(Context ctx) {
+        try {
+            SharedPreferences prefs = getConfigPrefs(ctx);
+            String source = readCourseSource(prefs);
+            String bean = readActiveCourseBeanJson(ctx, prefs);
+            boolean imported = bean != null && !bean.isEmpty();
+            Intent intent = new Intent(ACTION_PUSH_COURSE_DATA_STATUS);
+            intent.setPackage(MODULE_PKG);
+            intent.putExtra(CourseDataStatusReceiver.EXTRA_SOURCE, source);
+            intent.putExtra(CourseDataStatusReceiver.EXTRA_IMPORTED, imported);
+            ctx.sendBroadcast(intent);
+            XposedBridge.log(TAG + ": 已推送课程数据状态 source=" + source + " imported=" + imported);
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": pushCourseDataStatus 失败 -> " + t.getMessage());
+        }
     }
 
     private void showToast(Context ctx, String msg) {
