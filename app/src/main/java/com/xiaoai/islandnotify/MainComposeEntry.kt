@@ -70,6 +70,7 @@ import dev.lackluster.hyperx.compose.preference.PreferenceGroup
 import dev.lackluster.hyperx.compose.preference.SwitchPreference
 import dev.lackluster.hyperx.compose.preference.TextPreference
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -80,6 +81,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Date
 import java.util.Locale
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -1677,9 +1679,49 @@ private fun TimeoutCard(activity: MainActivity, state: SettingsComposeState) {
     }
 }
 
+/**
+ * 解析超级小爱侧写入的课程数据状态快照，转成展示文案。
+ * 快照缺失或格式异常时返回 null，由调用方保持“获取中/未获取到”状态。
+ */
+private fun parseCourseStatusSummary(snapshotJson: String?): String? {
+    if (snapshotJson.isNullOrBlank()) return null
+    return try {
+        val root = JSONObject(snapshotJson)
+        val sources = root.optJSONArray("sources") ?: return null
+        val syncedParts = ArrayList<String>()
+        var latestImportMs = 0L
+        for (i in 0 until sources.length()) {
+            val source = sources.optJSONObject(i) ?: continue
+            if (!source.optBoolean("present", false)) continue
+            val label = when (source.optString("id")) {
+                "wakeup" -> "WakeUp 课程表"
+                "shiguang" -> "拾光"
+                else -> "超级小爱"
+            }
+            syncedParts.add("$label（${source.optInt("count", 0)} 门）")
+            latestImportMs = maxOf(latestImportMs, source.optLong("time", 0L))
+        }
+        if (syncedParts.isEmpty()) {
+            "尚未同步课程数据，选择数据源后打开对应应用即可同步"
+        } else {
+            val timeText = if (latestImportMs > 0L) {
+                "数据时间：" + SimpleDateFormat("M月d日 HH:mm", Locale.getDefault()).format(Date(latestImportMs))
+            } else {
+                "数据时间：未知"
+            }
+            "已同步：" + syncedParts.joinToString("、") + "；" + timeText
+        }
+    } catch (e: Exception) {
+        null
+    }
+}
+
 @Composable
 private fun ReminderCard(activity: MainActivity, state: SettingsComposeState) {
     var showReminderPicker by remember { mutableStateOf(false) }
+    var courseStatusSummary by remember { mutableStateOf("正在获取课程数据状态…") }
+    var showCourseResetDialog by remember { mutableStateOf(false) }
+    var statusQueryTick by remember { mutableIntStateOf(0) }
     val dataSourceEntries = remember {
         listOf(
             DropDownEntry(title = "超级小爱"),
@@ -1736,6 +1778,12 @@ private fun ReminderCard(activity: MainActivity, state: SettingsComposeState) {
                     showReminderPicker = true
                 },
             )
+            Spacer(modifier = Modifier.height(8.dp))
+            TextPreference(
+                title = "课程数据状态",
+                summary = courseStatusSummary,
+                onClick = { showCourseResetDialog = true },
+            )
         }
     }
     if (showReminderPicker) {
@@ -1749,6 +1797,63 @@ private fun ReminderCard(activity: MainActivity, state: SettingsComposeState) {
                 state.reminderMinutes = it.toString()
                 activity.uiEditConfigPrefs().putInt("reminder_minutes_before", it).apply()
                 showReminderPicker = false
+            },
+        )
+    }
+    val refreshTick by ComposeRefreshBus.tick.collectAsStateCompat()
+    fun applyCourseStatusSnapshot(): Boolean {
+        val summary = parseCourseStatusSummary(activity.uiReadCourseDataStatusSnapshot())
+        if (summary != null) {
+            courseStatusSummary = summary
+            return true
+        }
+        return false
+    }
+    // 监听 ComposeRefreshBus.bump()，当收到广播更新时立即应用
+    LaunchedEffect(refreshTick) {
+        applyCourseStatusSnapshot()
+    }
+    LaunchedEffect(statusQueryTick) {
+        // 进入页面先展示本地缓存快照（若有），再异步向超级小爱发送查询请求
+        var gotSnapshot = applyCourseStatusSnapshot()
+        activity.uiQueryCourseDataStatus()
+        // 500ms 后再次尝试读取（等待超级小爱处理广播回传）
+        delay(500)
+        gotSnapshot = applyCourseStatusSnapshot() || gotSnapshot
+        delay(1200)
+        gotSnapshot = applyCourseStatusSnapshot() || gotSnapshot
+        if (statusQueryTick > 0) {
+            delay(1500)
+            gotSnapshot = applyCourseStatusSnapshot() || gotSnapshot
+        }
+        if (!gotSnapshot) {
+            courseStatusSummary = "尚未同步课程数据，选择数据源后打开对应应用即可同步"
+        }
+    }
+    if (showCourseResetDialog) {
+        HyperAlertDialog(
+            visible = true,
+            title = "重置课程数据",
+            message = "是否去重置已导入的课程数据？\n\n" +
+                    "将清除超级小爱内由 WakeUp 课程表、拾光等外部数据源同步的课程数据；" +
+                    "不会清除这些应用内的数据，也不影响超级小爱自身的课表。\n" +
+                    "重置后请重新选择数据源，并打开对应应用完成同步。",
+            cancelable = true,
+            mode = AlertDialogMode.NegativeAndPositive,
+            negativeText = "取消",
+            positiveText = "重置",
+            onDismissRequest = { showCourseResetDialog = false },
+            onNegativeButton = { showCourseResetDialog = false },
+            onPositiveButton = {
+                showCourseResetDialog = false
+                activity.uiResetImportedCourseData()
+                courseStatusSummary = "正在重置课程数据…"
+                statusQueryTick++
+                Toast.makeText(
+                    activity,
+                    "已发送重置指令，请重新选择数据源并打开对应应用同步课表",
+                    Toast.LENGTH_SHORT
+                ).show()
             },
         )
     }

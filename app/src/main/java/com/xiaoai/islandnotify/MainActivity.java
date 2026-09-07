@@ -1,5 +1,6 @@
 package com.xiaoai.islandnotify;
 
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -52,6 +53,13 @@ public class MainActivity extends AppCompatActivity {
     private static final String TARGET_SYSTEMUI = "com.android.systemui";
     private static final String TARGET_SYSTEMUI_PLUGIN = "miui.systemui.plugin";
     private static final String ACTION_RESCHEDULE_DAILY = "com.xiaoai.islandnotify.ACTION_RESCHEDULE_DAILY";
+    private static final String ACTION_COURSE_STATUS_QUERY = "com.xiaoai.islandnotify.ACTION_COURSE_STATUS_QUERY";
+    private static final String ACTION_COURSE_MIRROR_RESET = "com.xiaoai.islandnotify.ACTION_COURSE_MIRROR_RESET";
+    private static final String VOICEASSIST_UPLOAD_SERVICE = "com.xiaomi.voiceassistant.UploadStateService";
+    /** 课程数据状态快照存入本地 island_runtime SP 的键 */
+    private static final String KEY_SNAPSHOT_STORAGE = CourseStatusReceiver.KEY_SNAPSHOT_STORAGE;
+    /** 记录重置时间戳的配置键（存入 island_custom，供源应用 Hook 检测） */
+    public static final String KEY_COURSE_MIRROR_RESET_EPOCH = "course_mirror_reset_epoch";
     private static final String ALIAS = "com.xiaoai.islandnotify.MainActivityAlias";
     private static final String HINT_KEY_PREFIX = "hint_";
     private static final String BACKUP_SCHEMA = "com.xiaoai.islandnotify.config_backup";
@@ -198,6 +206,62 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /**
+     * 向超级小爱进程投递课程数据指令（状态查询 / 重置）。
+     * 优先 startService 借由被 hook 的 UploadStateService 拉起进程并转发，
+     * 失败（进程拉起受限等）时退回普通广播，由运行中的动态接收器处理。
+     */
+    private void sendCourseCommandToVoiceassist(String action) {
+        try {
+            Intent svc = new Intent(action);
+            svc.setClassName(TARGET_VOICEASSIST, VOICEASSIST_UPLOAD_SERVICE);
+            boolean started = false;
+            try {
+                started = startService(svc) != null;
+            } catch (Throwable ignored) {
+            }
+            if (!started) {
+                Intent broadcast = new Intent(action);
+                broadcast.setPackage(TARGET_VOICEASSIST);
+                broadcast.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
+                sendBroadcast(broadcast);
+            }
+            Log.d("IslandNotify", "sendCourseCommand " + action + " viaService=" + started);
+        } catch (Throwable t) {
+            Log.w("IslandNotify", "sendCourseCommand " + action + " failed: " + t.getMessage());
+        }
+    }
+
+    /** 请求超级小爱刷新课程数据状态快照（通过广播回传）。 */
+    void uiQueryCourseDataStatus() {
+        sendCourseCommandToVoiceassist(ACTION_COURSE_STATUS_QUERY);
+    }
+
+    /** 请求超级小爱清除外部导入（WakeUp / 拾光镜像）的课程数据。 */
+    void uiResetImportedCourseData() {
+        // 1. 在共享配置中更新重置时间戳（WakeUp / 拾光 Hook 进程可感知，从而清除内存里的 hash 缓存）
+        long now = System.currentTimeMillis();
+        uiEditConfigPrefs().putLong(KEY_COURSE_MIRROR_RESET_EPOCH, now).apply();
+        // 2. 清空本地快照存储，UI 立即显示重置后状态
+        getSharedPreferences(PREFS_RUNTIME_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .remove(KEY_SNAPSHOT_STORAGE)
+                .apply();
+        // 3. 向超级小爱投递重置指令，清除镜像 SP 并重调度
+        sendCourseCommandToVoiceassist(ACTION_COURSE_MIRROR_RESET);
+    }
+
+    /** 读取最近一次课程数据状态快照 JSON；尚未生成时返回 null。 */
+    String uiReadCourseDataStatusSnapshot() {
+        try {
+            SharedPreferences sp = getSharedPreferences(PREFS_RUNTIME_NAME, Context.MODE_PRIVATE);
+            return sp.getString(KEY_SNAPSHOT_STORAGE, null);
+        } catch (Throwable t) {
+            Log.w("IslandNotify", "uiReadCourseDataStatusSnapshot failed: " + t.getMessage());
+            return null;
+        }
+    }
+
     void uiEnsureScopeForCourseDataSource(String source, Runnable onApproved) {
         if ("wakeup".equalsIgnoreCase(source)) {
             ensureScopeForTarget(TARGET_WAKEUP, onApproved);
@@ -340,6 +404,8 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private BroadcastReceiver mCourseStatusReceiver;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         if (maybeRedirectForPredictiveBackMode()) {
@@ -348,10 +414,35 @@ public class MainActivity extends AppCompatActivity {
         }
         super.onCreate(savedInstanceState);
         registerConfigBackupLaunchers();
+        registerCourseStatusReceiver();
         MainComposeEntry.install(this);
         androidx.core.view.WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         syncFrameworkServiceState();
         updateModuleStatus();
+    }
+
+    private void registerCourseStatusReceiver() {
+        if (mCourseStatusReceiver != null) return;
+        mCourseStatusReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (intent == null) return;
+                if (CourseStatusReceiver.ACTION_UPDATE_COURSE_STATUS.equals(intent.getAction())) {
+                    String snapshot = intent.getStringExtra(CourseStatusReceiver.KEY_COURSE_STATUS_SNAPSHOT);
+                    if (snapshot != null && !snapshot.isEmpty()) {
+                        getSharedPreferences(PREFS_RUNTIME_NAME, Context.MODE_PRIVATE)
+                                .edit()
+                                .putString(KEY_SNAPSHOT_STORAGE, snapshot)
+                                .apply();
+                        requestComposeRefresh();
+                    }
+                }
+            }
+        };
+        android.content.IntentFilter filter =
+                new android.content.IntentFilter(CourseStatusReceiver.ACTION_UPDATE_COURSE_STATUS);
+        androidx.core.content.ContextCompat.registerReceiver(
+                this, mCourseStatusReceiver, filter, androidx.core.content.ContextCompat.RECEIVER_EXPORTED);
     }
 
     @Override
@@ -362,6 +453,13 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        if (mCourseStatusReceiver != null) {
+            try {
+                unregisterReceiver(mCourseStatusReceiver);
+            } catch (Throwable ignored) {
+            }
+            mCourseStatusReceiver = null;
+        }
         HolidayManager.clearRemotePrefs();
         super.onDestroy();
     }

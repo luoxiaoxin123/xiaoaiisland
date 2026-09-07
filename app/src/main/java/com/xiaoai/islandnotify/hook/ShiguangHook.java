@@ -61,6 +61,7 @@ public class ShiguangHook {
         if (System.getProperty(HOOKED_KEY) != null) return;
         System.setProperty(HOOKED_KEY, "1");
         hookApplicationOnCreate(classLoader);
+        hookActivityOnResume(classLoader);
         XposedBridge.log(TAG + ": 已注入目标进程 → " + TARGET_PACKAGE);
     }
 
@@ -74,6 +75,22 @@ public class ShiguangHook {
                         registerDbObserver(appCtx);
                         registerDataStoreObserver(appCtx);
                         postSync(appCtx, 350L, "startup");
+                    }
+                });
+    }
+
+    private void hookActivityOnResume(ClassLoader classLoader) {
+        findAndHookMethod("android.app.Activity", classLoader,
+                "onResume", new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        Object obj = param.thisObject;
+                        if (obj instanceof Context) {
+                            Context ctx = ((Context) obj).getApplicationContext();
+                            if (ctx != null) {
+                                postSync(ctx, 400L, "resume");
+                            }
+                        }
                     }
                 });
     }
@@ -152,6 +169,7 @@ public class ShiguangHook {
             String beanJson = buildWeekCourseBeanFromShiguang(ctx);
             if (beanJson == null || beanJson.isEmpty()) return;
             int hash = CourseScheduleParser.stableHash(beanJson);
+            adoptResetMarkerIfChanged();
             if (hash == mLastPushedHash) return;
 
             // 先用 startService 把可能已被杀的 voiceassist 拉起来（MainHook 的 Service hook
@@ -186,6 +204,28 @@ public class ShiguangHook {
         } catch (Throwable t) {
             XposedBridge.log(TAG + ": startService 拉起 voiceassist 失败 -> " + t.getMessage());
             return false;
+        }
+    }
+
+    /** 已观察到的模块 APP 重置标记；变化说明镜像刚被清空，需忽略 mLastPushedHash 强制重推 */
+    private volatile long mLastSeenResetEpoch = 0L;
+
+    /**
+     * 模块 APP 侧“课程数据状态”重置后会把 reset 标记写入模块自身的 island_custom。
+     * 本进程若被缓存，mLastPushedHash 仍停留在重置前的值，正常触发会误判“无变化”
+     * 而跳过重同步；观察到标记变化即清零，保证用户重开拾光后镜像一定重建。
+     */
+    private void adoptResetMarkerIfChanged() {
+        try {
+            android.content.SharedPreferences config =
+                    XposedBridge.getRemotePreferences("island_custom");
+            long resetEpoch = config.getLong(MainActivity.KEY_COURSE_MIRROR_RESET_EPOCH, 0L);
+            if (resetEpoch != mLastSeenResetEpoch) {
+                mLastSeenResetEpoch = resetEpoch;
+                mLastPushedHash = 0;
+                XposedBridge.log(TAG + ": 检测到重置标记变化，本次将强制重推课程镜像");
+            }
+        } catch (Throwable ignored) {
         }
     }
 

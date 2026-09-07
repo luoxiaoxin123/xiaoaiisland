@@ -52,3 +52,5 @@ version.properties
 .tmp_*/
 build/tmp/ref/
 .kotlin/
+.zcode/
+

@@ -104,9 +104,21 @@ public class MainHook {
     /** WakeUp 镜像存储键（写入 voiceassist 自身 island_runtime） */
     private static final String KEY_WAKEUP_MIRROR_BEAN = "wakeup_mirror_week_course_bean";
     private static final String KEY_WAKEUP_MIRROR_HASH = "wakeup_mirror_week_course_hash";
+    /** WakeUp 镜像最后一次同步成功的时间（epoch ms，写入 mirror SP） */
+    private static final String KEY_WAKEUP_MIRROR_TIME = "wakeup_mirror_sync_time";
     /** 拾光镜像存储键（写入 voiceassist 自身独立 SP） */
     private static final String KEY_SHIGUANG_MIRROR_BEAN = "shiguang_mirror_week_course_bean";
     private static final String KEY_SHIGUANG_MIRROR_HASH = "shiguang_mirror_week_course_hash";
+    /** 拾光镜像最后一次同步成功的时间（epoch ms，写入 mirror SP） */
+    private static final String KEY_SHIGUANG_MIRROR_TIME = "shiguang_mirror_sync_time";
+    /** 模块 APP 查询课程数据状态：重新计算并回传广播快照 */
+    public static final String ACTION_COURSE_STATUS_QUERY = "com.xiaoai.islandnotify.ACTION_COURSE_STATUS_QUERY";
+    /** 模块 APP 重置外部导入课程数据：仅清除镜像，不动源应用与 CourseData */
+    public static final String ACTION_COURSE_MIRROR_RESET = "com.xiaoai.islandnotify.ACTION_COURSE_MIRROR_RESET";
+    /** 模块 APP 接收课程数据状态快照广播的 Action */
+    public static final String ACTION_UPDATE_COURSE_STATUS = "com.xiaoai.islandnotify.ACTION_UPDATE_COURSE_STATUS";
+    /** 快照 JSON 的存储键 */
+    public static final String KEY_COURSE_STATUS_SNAPSHOT = "snapshot_json";
     /** 课前提醒分钟数配置键（存入 island_custom SP） */
     private static final String KEY_REMINDER_MINUTES = "reminder_minutes_before";
     /** 课前提醒默认提前分钟数 */
@@ -355,6 +367,8 @@ public class MainHook {
                 filter.addAction(ACTION_NOTIF_CANCEL);
                 filter.addAction(ACTION_WAKEUP_COURSE_SYNC);
                 filter.addAction(ACTION_SHIGUANG_COURSE_SYNC);
+                filter.addAction(ACTION_COURSE_STATUS_QUERY);
+                filter.addAction(ACTION_COURSE_MIRROR_RESET);
                 BroadcastReceiver receiver = new BroadcastReceiver() {
                     @Override
                     public void onReceive(Context context, Intent intent) {
@@ -698,6 +712,8 @@ public class MainHook {
                 } catch (Throwable ignored) {}
                 // 跨日自动重调：每天 00:01 重新调度当日闹钟，链式保证次日不丢失
                 scheduleMidnightReschedule(appCtx);
+                // 刷新课程数据状态快照，供模块 APP“课程数据状态”行展示
+                writeCourseStatusSnapshot(appCtx);
                 XposedBridge.log(TAG + ": 偷好同步接收器已注册，课前提醒已开启");
             }
         });
@@ -784,6 +800,7 @@ public class MainHook {
             wakeupMirror.edit()
                     .putString(KEY_WAKEUP_MIRROR_BEAN, beanJson)
                     .putInt(KEY_WAKEUP_MIRROR_HASH, hash)
+                    .putLong(KEY_WAKEUP_MIRROR_TIME, System.currentTimeMillis())
                     .apply();
             SharedPreferences prefs = getConfigPrefs(context);
             if (isWakeupDataSource(prefs)) {
@@ -794,6 +811,7 @@ public class MainHook {
             if (isFirstSync) {
                 showFirstSyncToast(context);
             }
+            writeCourseStatusSnapshot(context);
             return true;
         }
         if (ACTION_SHIGUANG_COURSE_SYNC.equals(action)) {
@@ -808,6 +826,7 @@ public class MainHook {
             mirror.edit()
                     .putString(KEY_SHIGUANG_MIRROR_BEAN, beanJson)
                     .putInt(KEY_SHIGUANG_MIRROR_HASH, hash)
+                    .putLong(KEY_SHIGUANG_MIRROR_TIME, System.currentTimeMillis())
                     .apply();
             SharedPreferences prefs = getConfigPrefs(context);
             if (isShiguangDataSource(prefs)) {
@@ -818,6 +837,15 @@ public class MainHook {
             if (isFirstSync) {
                 showFirstSyncToast(context);
             }
+            writeCourseStatusSnapshot(context);
+            return true;
+        }
+        if (ACTION_COURSE_STATUS_QUERY.equals(action)) {
+            writeCourseStatusSnapshot(context);
+            return true;
+        }
+        if (ACTION_COURSE_MIRROR_RESET.equals(action)) {
+            resetImportedCourseData(context);
             return true;
         }
         if (ACTION_RESCHEDULE_DAILY.equals(action)) {
@@ -930,7 +958,10 @@ public class MainHook {
                 // 镜像同步也走这条路：第三方课表用 startService 把本进程拉起来后，
                 // 由此转成包内广播，避免进程已被杀时推送静默丢失。
                 || ACTION_WAKEUP_COURSE_SYNC.equals(action)
-                || ACTION_SHIGUANG_COURSE_SYNC.equals(action);
+                || ACTION_SHIGUANG_COURSE_SYNC.equals(action)
+                // 模块 APP 的状态查询 / 重置指令也走 Service 拉起 + 转发
+                || ACTION_COURSE_STATUS_QUERY.equals(action)
+                || ACTION_COURSE_MIRROR_RESET.equals(action);
     }
 
     /**
@@ -2662,6 +2693,126 @@ public class MainHook {
     private void showToast(Context ctx, String msg) {
         new android.os.Handler(android.os.Looper.getMainLooper()).post(() ->
                 android.widget.Toast.makeText(ctx, msg, android.widget.Toast.LENGTH_SHORT).show());
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // 课程数据状态（模块 APP“课程数据状态”行的数据来源）
+    // ─────────────────────────────────────────────────────────────
+
+    /**
+     * 重置外部导入的课程数据：仅清除“课程表超级表”（超级小爱进程内）的
+     * WakeUp / 拾光镜像数据，不触碰超级小爱自身 CourseData，
+     * 更不会清除 WakeUp / 拾光应用内的任何数据。
+     */
+    private void resetImportedCourseData(Context ctx) {
+        try {
+            ctx.getSharedPreferences(PREFS_WAKEUP_MIRROR, Context.MODE_PRIVATE).edit()
+                    .remove(KEY_WAKEUP_MIRROR_BEAN)
+                    .remove(KEY_WAKEUP_MIRROR_HASH)
+                    .remove(KEY_WAKEUP_MIRROR_TIME)
+                    .apply();
+            ctx.getSharedPreferences(PREFS_SHIGUANG_MIRROR, Context.MODE_PRIVATE).edit()
+                    .remove(KEY_SHIGUANG_MIRROR_BEAN)
+                    .remove(KEY_SHIGUANG_MIRROR_HASH)
+                    .remove(KEY_SHIGUANG_MIRROR_TIME)
+                    .apply();
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": 重置课程镜像清除 SP 失败 -> " + t.getMessage());
+        }
+
+        // 课程数据为空时调度逻辑会提前返回而不取消旧闹钟，重置后需显式取消，
+        // 否则当天已调度的提醒/静音闹钟会按清空前的数据继续触发。
+        cancelAllScheduledAlarms(ctx);
+        cancelAllMuteAlarms(ctx);
+        cancelStaleNotifications(ctx, java.util.Collections.emptySet());
+        safeReschedule(ctx, "course_mirror_reset", false);
+
+        writeCourseStatusSnapshot(ctx);
+        showToast(ctx, "已重置导入的课程数据，请打开对应应用重新同步");
+        XposedBridge.log(TAG + ": [mirror-reset] 外部导入课程数据已清除");
+    }
+
+    /**
+     * 将三个数据源（超级小爱 CourseData / WakeUp 镜像 / 拾光镜像）的
+     * 同步状态组装成快照，通过显式广播发回模块 APP 进程保存。
+     */
+    private void writeCourseStatusSnapshot(Context ctx) {
+        try {
+            JSONArray sources = new JSONArray();
+            long latest = appendSourceStatus(sources, "xiaoai",
+                    readCourseDataBean(ctx), readCourseDataMtime(ctx));
+            SharedPreferences wakeupMirror =
+                    ctx.getSharedPreferences(PREFS_WAKEUP_MIRROR, Context.MODE_PRIVATE);
+            latest = Math.max(latest, appendSourceStatus(sources, "wakeup",
+                    wakeupMirror.getString(KEY_WAKEUP_MIRROR_BEAN, null),
+                    wakeupMirror.getLong(KEY_WAKEUP_MIRROR_TIME, 0L)));
+            SharedPreferences shiguangMirror =
+                    ctx.getSharedPreferences(PREFS_SHIGUANG_MIRROR, Context.MODE_PRIVATE);
+            latest = Math.max(latest, appendSourceStatus(sources, "shiguang",
+                    shiguangMirror.getString(KEY_SHIGUANG_MIRROR_BEAN, null),
+                    shiguangMirror.getLong(KEY_SHIGUANG_MIRROR_TIME, 0L)));
+
+            JSONObject snapshot = new JSONObject();
+            snapshot.put("sources", sources);
+            snapshot.put("latestImportMs", latest);
+            snapshot.put("updatedAt", System.currentTimeMillis());
+
+            Intent intent = new Intent(ACTION_UPDATE_COURSE_STATUS);
+            intent.setPackage(MODULE_PKG);
+            intent.putExtra(KEY_COURSE_STATUS_SNAPSHOT, snapshot.toString());
+            ctx.sendBroadcast(intent);
+            XposedBridge.log(TAG + ": 已广播课程数据状态快照 -> " + snapshot);
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": writeCourseStatusSnapshot 失败 -> " + t.getMessage());
+        }
+    }
+
+    /** 追加单个数据源的状态，返回该源的“最后一次导入时间”（无数据返回 0）。 */
+    private long appendSourceStatus(JSONArray sources, String id, String beanJson, long syncTimeMs) {
+        try {
+            JSONObject src = new JSONObject();
+            src.put("id", id);
+            boolean present = beanJson != null && !beanJson.isEmpty();
+            src.put("present", present);
+            src.put("count", present ? countDistinctCourses(beanJson) : 0);
+            src.put("time", syncTimeMs);
+            sources.put(src);
+            return present ? syncTimeMs : 0L;
+        } catch (Throwable t) {
+            XposedBridge.log(TAG + ": appendSourceStatus(" + id + ") 失败 -> " + t.getMessage());
+            return 0L;
+        }
+    }
+
+    /** 统计课表中去重后的课程门数；解析失败时退回 courses 数组长度。 */
+    private int countDistinctCourses(String beanJson) {
+        try {
+            CourseScheduleParser.ParsedSchedule parsed = CourseScheduleParser.parse(beanJson);
+            java.util.Set<String> names = new java.util.HashSet<>();
+            for (CourseScheduleParser.CourseSlot slot : parsed.courses) {
+                if (slot != null && !slot.courseName.isEmpty()) names.add(slot.courseName);
+            }
+            return names.size();
+        } catch (Throwable ignored) {
+            try {
+                JSONObject root = new JSONObject(beanJson);
+                JSONArray arr = root.getJSONObject("data").optJSONArray("courses");
+                return arr == null ? 0 : arr.length();
+            } catch (Throwable ignored2) {
+                return 0;
+            }
+        }
+    }
+
+    /** 超级小爱 CourseData.xml 的最后修改时间，近似其原生课表的导入时间。 */
+    private long readCourseDataMtime(Context ctx) {
+        try {
+            java.io.File xml = new java.io.File(
+                    ctx.getApplicationInfo().dataDir, "shared_prefs/" + PREFS_COURSE_DATA + ".xml");
+            return xml.exists() ? xml.lastModified() : 0L;
+        } catch (Throwable ignored) {
+            return 0L;
+        }
     }
 
     private int readConfigInt(SharedPreferences prefs, String key, int fallback) {
